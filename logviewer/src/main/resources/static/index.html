@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Log Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background-color: #1e1e1e;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #00ff88;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .status {
+            background-color: #2d2d2d;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            border-left: 4px solid #00ff88;
+        }
+
+        .status.disconnected {
+            border-left-color: #ff4444;
+        }
+
+        .log-container {
+            background-color: #000000;
+            border: 1px solid #333;
+            border-radius: 5px;
+            padding: 15px;
+            height: 400px;
+            overflow-y: auto;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        .log-line {
+            margin: 2px 0;
+            padding: 2px 5px;
+            border-left: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+
+        .log-line.new {
+            background-color: #001a00;
+            border-left-color: #00ff88;
+            animation: highlight 2s ease-out;
+        }
+
+        @keyframes highlight {
+            0% { background-color: #003300; }
+            100% { background-color: transparent; }
+        }
+
+        .controls {
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        button {
+            background-color: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 0 10px;
+        }
+
+        button:hover {
+            background-color: #005a9f;
+        }
+
+        button:disabled {
+            background-color: #666;
+            cursor: not-allowed;
+        }
+
+        .log-count {
+            color: #888;
+            font-size: 12px;
+            text-align: center;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+<h1>Real-time Log Viewer</h1>
+
+<div id="status" class="status disconnected">
+    Status: Connecting...
+</div>
+
+<div class="controls">
+    <button id="clearBtn" onclick="clearLogs()">Clear Display</button>
+    <button id="requestBtn" onclick="requestInitialLogs()">Refresh Logs</button>
+    <button id="connectBtn" onclick="reconnect()">Reconnect</button>
+</div>
+
+<div class="log-container" id="logContainer">
+    <div id="logs"></div>
+</div>
+
+<div class="log-count">
+    Showing last <span id="logCount">0</span> lines
+</div>
+
+<script>
+    let client = null;
+    let connected = false;
+    let logCount = 0;
+
+    function updateStatus(message, isConnected) {
+        const statusDiv = document.getElementById("status");
+        statusDiv.textContent = `Status: ${message}`;
+        statusDiv.className = `status ${isConnected ? '' : 'disconnected'}`;
+        connected = isConnected;
+
+        // Update button states
+        document.getElementById("connectBtn").disabled = isConnected;
+        document.getElementById("requestBtn").disabled = !isConnected;
+    }
+
+    function connect() {
+        try {
+            updateStatus("Connecting...", false);
+            console.log("Attempting to connect to:", window.location.origin + "/logs");
+
+            let socket = new SockJS("/logs");
+            client = Stomp.over(socket);
+
+            // Enable console logs from STOMP for debugging
+            client.debug = function(str) {
+                console.log("STOMP Debug:", str);
+            };
+
+            client.connect({}, function(frame) {
+                console.log("Connected to WebSocket!");
+                updateStatus("Connected", true);
+
+                // Subscribe to log updates
+                client.subscribe("/topic/log", function (data) {
+                    try {
+                        const message = JSON.parse(data.body);
+                        handleMessage(message);
+                    } catch (e) {
+                        console.error("Error parsing message:", e);
+                    }
+                });
+
+                // Request initial logs after connection
+                setTimeout(() => {
+                    requestInitialLogs();
+                }, 500);
+
+            }, function(error) {
+                console.error("WebSocket connection error:", error);
+                updateStatus("Connection Failed", false);
+                // Try to reconnect after 3 seconds
+                setTimeout(connect, 3000);
+            });
+
+        } catch (error) {
+            console.error("Error establishing connection:", error);
+            updateStatus("Connection Error", false);
+        }
+    }
+
+    function handleMessage(message) {
+        if (message.content === "CLEAR") {
+            clearLogs();
+            return;
+        }
+
+        printLogLine(message.content, true);
+    }
+
+    function printLogLine(content, isNew = false) {
+        const log = document.getElementById("logs");
+        const newLine = document.createElement("div");
+
+        newLine.className = `log-line ${isNew ? 'new' : ''}`;
+        newLine.textContent = content;
+
+        log.appendChild(newLine);
+        logCount++;
+
+        // Auto-scroll to bottom
+        const container = document.getElementById("logContainer");
+        container.scrollTop = container.scrollHeight;
+
+        // Update log count
+        document.getElementById("logCount").textContent = logCount;
+
+        // Remove the 'new' class after animation
+        if (isNew) {
+            setTimeout(() => {
+                newLine.classList.remove('new');
+            }, 2000);
+        }
+    }
+
+    function clearLogs() {
+        document.getElementById("logs").innerHTML = "";
+        logCount = 0;
+        document.getElementById("logCount").textContent = logCount;
+    }
+
+    function requestInitialLogs() {
+        if (client && connected) {
+            console.log("Requesting initial logs...");
+            client.send("/app/initial", {}, JSON.stringify({}));
+        }
+    }
+
+    function reconnect() {
+        if (client) {
+            try {
+                client.disconnect();
+            } catch (e) {
+                // Ignore errors during disconnect
+            }
+        }
+        setTimeout(connect, 500);
+    }
+
+    // Start connection when page loads
+    window.addEventListener('load', function() {
+        connect();
+    });
+
+    // Handle page visibility changes
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden && !connected) {
+            console.log("Page became visible, attempting to reconnect...");
+            reconnect();
+        }
+    });
+
+    // Handle connection loss
+    window.addEventListener('beforeunload', function() {
+        if (client && connected) {
+            client.disconnect();
+        }
+    });
+</script>
+</body>
+</html>
